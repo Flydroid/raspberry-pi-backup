@@ -2,6 +2,7 @@
 
 # script version 0.0.8 (2025.02.08)
 
+
 # uncomment for debugging
 #set -x
 
@@ -12,20 +13,14 @@ if [ -f $SCRIPT_DIR/backup.conf ]; then
     # read local configuration
     . $SCRIPT_DIR/backup.conf
 else
-    # specify the remote mount
-    BACKUP_REMOTE_MOUNT="//192.168.1.1/sharename"
+    # specify the USB disk mount point
+    BACKUP_USB_MOUNT="/mnt/usb"
 
     # specify a subfolder (with ending /) if needed, else
     # leave completely empty
     # NOTE: an additional subfolder with the hostname of
     #       the device is automatically created
     BACKUP_SUBFOLDER="Backups/"
-
-    # specify the username for the remote mount
-    BACKUP_REMOTE_MOUNT_USER="username"
-
-    # specify the password for the remote mount
-    BACKUP_REMOTE_MOUNT_PW="password"
 
     # how may backups should be kept?
     # Use 0 to disable old backup deletion
@@ -44,35 +39,54 @@ fi
 
 
 
-BACKUP_MOUNT="/mnt/backup"
+# Determine backup mode: network share or USB disk
+if [ -n "${BACKUP_REMOTE_MOUNT}" ]; then
+    BACKUP_MOUNT="/mnt/backup"
+    BACKUP_MODE="network"
+elif [ -n "${BACKUP_USB_MOUNT}" ]; then
+    BACKUP_MOUNT="${BACKUP_USB_MOUNT}"
+    BACKUP_MODE="usb"
+else
+    echo "Error: Neither BACKUP_REMOTE_MOUNT nor BACKUP_USB_MOUNT is set in config."
+    exit 1
+fi
+
 BACKUP_PATH="${BACKUP_MOUNT}/${BACKUP_SUBFOLDER}${BACKUP_HOSTNAME}"
 BACKUP_NAME="Backup_${BACKUP_HOSTNAME}"
 
 echo
 
+
 # create mount dir if not exists
-if [ ! -d ${BACKUP_MOUNT} ]; then
+if [ ! -d "${BACKUP_MOUNT}" ]; then
     echo "${BACKUP_MOUNT} does not exist. Creating folder..."
-    mkdir ${BACKUP_MOUNT}
+    mkdir -p "${BACKUP_MOUNT}"
     echo
 fi
 
 # check if something is already mounted
-if [ 1 -eq "$(mount -v | grep -c ${BACKUP_MOUNT})" ]; then
-    echo "WARNING: There is already mounted something to \"${BACKUP_MOUNT}\". This will be unmounted now."
-    echo
-    mount -v | grep ${BACKUP_MOUNT}
-    umount ${BACKUP_MOUNT}
+if mount | grep -q "on ${BACKUP_MOUNT} "; then
+    echo "WARNING: There is already something mounted on \"${BACKUP_MOUNT}\". This will be unmounted now."
+    umount "${BACKUP_MOUNT}"
     echo
 fi
 
-# mount harddisk
-echo "Mounting \"${BACKUP_REMOTE_MOUNT}\" to \"${BACKUP_MOUNT}\"..."
-mount -t cifs -o user=${BACKUP_REMOTE_MOUNT_USER},password=${BACKUP_REMOTE_MOUNT_PW},rw,file_mode=0660,dir_mode=0660,nounix,noserverino ${BACKUP_REMOTE_MOUNT} ${BACKUP_MOUNT}
-
-if [ $? -ne 0 ]; then
-    echo "Error when mounting the remote path."
-    exit
+if [ "$BACKUP_MODE" = "network" ]; then
+    # mount network share
+    echo "Mounting network share \"${BACKUP_REMOTE_MOUNT}\" to \"${BACKUP_MOUNT}\"..."
+    mount -t cifs -o user=${BACKUP_REMOTE_MOUNT_USER},password=${BACKUP_REMOTE_MOUNT_PW},rw,file_mode=0660,dir_mode=0660,nounix,noserverino ${BACKUP_REMOTE_MOUNT} ${BACKUP_MOUNT}
+    if [ $? -ne 0 ]; then
+        echo "Error when mounting the network share."
+        exit
+    fi
+elif [ "$BACKUP_MODE" = "usb" ]; then
+    # mount USB disk (assume exFAT)
+    echo "Mounting USB disk to \"${BACKUP_MOUNT}\"..."
+    mount -t exfat ${BACKUP_USB_DEVICE:-/dev/sda1} "${BACKUP_MOUNT}"
+    if [ $? -ne 0 ]; then
+        echo "Error when mounting the USB disk."
+        exit
+    fi
 fi
 
 echo
@@ -152,11 +166,15 @@ if [ "${BACKUP_COUNT}" -gt "0" ]; then
 
 fi
 
-# unmount harddisk
-umount ${BACKUP_MOUNT}
 
+# unmount
+umount "${BACKUP_MOUNT}"
 if [ $? -ne 0 ]; then
-    echo "Error when unmounting the remote path."
+    if [ "$BACKUP_MODE" = "network" ]; then
+        echo "Error when unmounting the network share."
+    else
+        echo "Error when unmounting the USB disk."
+    fi
 fi
 
 echo
